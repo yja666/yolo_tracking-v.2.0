@@ -9,8 +9,8 @@ import shutil
 import time
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
-from multiprocessing import Process,Queue
-import queue
+from multiprocessing import Process, Queue
+from queue import Queue
 from pathlib import Path
 from threading import Thread
 
@@ -271,7 +271,11 @@ def video_capture(self, s):
         # self.append(frame)
         # if len(self)>40:
         #     self.pop(0)
-        if self.qsize()>1:
+        # 多线程只获取最新的照片
+        # while len(self)>2:
+        #     self.pop(0)
+        # self.append(frame)
+        while self.qsize() > 2:
             self.get()
         self.put(frame)
     # 释放摄像头
@@ -292,6 +296,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
         n = len(sources)
         self.imgs = Queue()
+        #self.imgs = []
         self.sources = [clean_str(x) for x in sources]  # clean source names for later
         for i, s in enumerate(sources):  # index, source
             # Start thread to read frames from video stream
@@ -309,14 +314,17 @@ class LoadStreams:  # multiple IP or RTSP cameras
             self.fps = cap.get(cv2.CAP_PROP_FPS) % 100
             cap.release()
             # 储存视频帧
+            # 多线程
+            Th = Thread(target=video_capture, args=(self.imgs, s))
+            Th.start()
             # 多进程
-            asd_process = Process(target=video_capture, args=(self.imgs, s))
-            asd_process.start()
+            # asd_process = Process(target=video_capture, args=(self.imgs, s))
+            # asd_process.start()
             # _, frame = cap.read()  # guarantee first frame
             # self.imgs.put(frame)
-            thread = Thread(target=self.update, args=([i, cap]), daemon=True)
+            # thread = Thread(target=self.update, args=([i, cap]), daemon=True)
             print(f' success ({w}x{h} at {self.fps:.2f} FPS).')
-            thread.start()
+            # thread.start()
         print('')  # newline
 
         # check for common shapes
@@ -345,6 +353,9 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
     def __next__(self):
         self.count += 1
+        # while not self.imgs:
+        #     pass
+        # img0 = [self.imgs[0]].copy
         img0 = [self.imgs.get()].copy()
         if cv2.waitKey(1) == ord('q'):  # q to quit
             cv2.destroyAllWindows()
@@ -436,7 +447,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 x[:, 0] = 0
 
         n = len(shapes)  # number of images
-        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
+        bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
         self.n = n
@@ -464,7 +475,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -1065,7 +1076,7 @@ def extract_boxes(path='../coco128/'):  # from utils.datasets import *; extract_
                     b = x[1:] * [w, h, w, h]  # box
                     # b[2:] = b[2:].max()  # rectangle to square
                     b[2:] = b[2:] * 1.2 + 3  # pad
-                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(np.int)
+                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(int)
 
                     b[[0, 2]] = np.clip(b[[0, 2]], 0, w)  # clip boxes outside of image
                     b[[1, 3]] = np.clip(b[[1, 3]], 0, h)

@@ -1,7 +1,7 @@
 import sys
 
 sys.path.insert(0, './yolov5')
-
+from real_track import real_track
 from yolov5.utils.google_utils import attempt_download
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.datasets import LoadImages, LoadStreams
@@ -195,8 +195,7 @@ def detect(opt):
 
 
                     ########
-                    _label=tlwh_bboxs[0]
-
+                    real_track(tlwh_bboxs[0])
 
 
                     # Write MOT compliant results to file

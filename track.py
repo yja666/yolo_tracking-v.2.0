@@ -1,6 +1,8 @@
 import sys
-sys.path.insert(0, './yolov5')
+from multiprocessing import Process, Queue
 
+sys.path.insert(0, './yolov5')
+from real_track import real_track
 from yolov5.utils.google_utils import attempt_download
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.datasets import LoadImages, LoadStreams
@@ -18,10 +20,95 @@ from pathlib import Path
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
+from onvif import ONVIFCamera
+from threading import Thread
+import zeep
 
-
+# import cruise_track
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
+mycam = ONVIFCamera('192.168.1.193', 80, 'admin', 'a12345678')
+media = mycam.create_media_service()
+ptz = mycam.create_ptz_service()
+media_profile = media.GetProfiles()[0]
+_AbsoluteMove = ptz.create_type('AbsoluteMove')
+_AbsoluteMove.ProfileToken = media_profile.token
+# 定义为是否有检测到
+xxxx = 0
+# 判断是否已开启自动巡航
+cruise = 0
+# 判断是否处于巡航中
+re_cruise = 0
+# 判断是否处于jjj函数中
+is_jjj = 0
+# 判断是否退出自动巡航线程
+_th1 = 0
+# 自动巡航的线程名
+th1 = None
+
+
+# 自动巡航进程函数
+def real_move():
+    global _th1
+    global re_cruise
+    request = ptz.create_type('GetConfigurationOptions')
+    request.ConfigurationToken = media_profile.PTZConfiguration.token
+    ptz_configuration_options = ptz.GetConfigurationOptions(request)
+    request = ptz.create_type('ContinuousMove')
+    print(request)
+    request.ProfileToken = media_profile.token
+    ptz.Stop({'ProfileToken': media_profile.token})
+
+    if request.Velocity is None:
+        request.Velocity = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+        request.Velocity.PanTilt.space = ptz_configuration_options.Spaces.ContinuousPanTiltVelocitySpace[0].URI
+        request.Velocity.Zoom.space = ptz_configuration_options.Spaces.ContinuousZoomVelocitySpace[0].URI
+
+    _AbsoluteMove = ptz.create_type('AbsoluteMove')
+    _AbsoluteMove.ProfileToken = media_profile.token
+    ptz.Stop({'ProfileToken': media_profile.token})
+    _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+    _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+
+    _AbsoluteMove.Position.PanTilt.x = 0
+    _AbsoluteMove.Speed.PanTilt.x = 6
+    print(type(_AbsoluteMove.Position.PanTilt.y))
+    _AbsoluteMove.Position.PanTilt.y = 1
+    print(type(_AbsoluteMove.Position.PanTilt.y))
+    _AbsoluteMove.Speed.PanTilt.y = 6
+
+    _AbsoluteMove.Position.Zoom = 0
+    _AbsoluteMove.Speed.Zoom = 6
+    request.Velocity.PanTilt.x = 0.3
+    request.Velocity.PanTilt.y = 0.3
+
+    ptz.AbsoluteMove(_AbsoluteMove)
+    print('init...')
+    while 1:
+        if ptz.GetStatus({'ProfileToken': media_profile.token}).Position.PanTilt.y == 1:
+            break
+    print('move...')
+    while 1:
+        if _th1:
+            _th1 = 0
+            re_cruise = 0
+            break
+        request.Velocity.PanTilt.y = -0.3
+        ptz.ContinuousMove(request)
+        while 1:
+            if _th1:
+                _th1 = 0
+                break
+            if ptz.GetStatus({'ProfileToken': media_profile.token}).Position.PanTilt.y <= 0.4:
+                break
+        request.Velocity.PanTilt.y = 0.3
+        ptz.ContinuousMove(request)
+        while 1:
+            if _th1:
+                _th1 = 0
+                break
+            if ptz.GetStatus({'ProfileToken': media_profile.token}).Position.PanTilt.y == 1:
+                break
 
 
 def xyxy_to_xywh(*xyxy):
@@ -36,18 +123,6 @@ def xyxy_to_xywh(*xyxy):
     h = bbox_h
     return x_c, y_c, w, h
 
-def xyxy_to_tlwh(bbox_xyxy):
-    tlwh_bboxs = []
-    for i, box in enumerate(bbox_xyxy):
-        x1, y1, x2, y2 = [int(i) for i in box]
-        top = x1
-        left = y1
-        w = int(x2 - x1)
-        h = int(y2 - y1)
-        tlwh_obj = [top, left, w, h]
-        tlwh_bboxs.append(tlwh_obj)
-    return tlwh_bboxs
-
 
 def compute_color_for_labels(label):
     """
@@ -57,32 +132,68 @@ def compute_color_for_labels(label):
     return tuple(color)
 
 
+# 画图
 def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
     for i, box in enumerate(bbox):
-        x1, y1, x2, y2 = [int(i) for i in box]
-        x1 += offset[0]
-        x2 += offset[0]
-        y1 += offset[1]
-        y2 += offset[1]
-        # box text and bar
-        id = int(identities[i]) if identities is not None else 0
-        color = compute_color_for_labels(id)
-        label = '{}{:d}'.format("", id)
-        t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 2, 2)[0]
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
-        cv2.rectangle(
-            img, (x1, y1), (x1 + t_size[0] + 3, y1 + t_size[1] + 4), color, -1)
-        cv2.putText(img, label, (x1, y1 +
-                                 t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
+        # 只取一直跟踪的那个
+        if box[-1] == identities:
+            x1, y1, x2, y2 = [int(i) for i in box]
+            # print(x1, y1, x2, y2)
+            x1 += offset[0]
+            x2 += offset[0]
+            y1 += offset[1]
+            y2 += offset[1]
+            # print(img.shape)
+            # box text and bar
+            # id = int(identities[i]) if identities is not None else 0
+            # color = compute_color_for_labels(id)
+            # label = '{}{:d}'.format("", id)
+            # t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 2, 2)[0]
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            break
+            # cv2.rectangle(
+        #     img, (x1, y1), (x1 + t_size[0] + 3, y1 + t_size[1] + 4), color, -1)
+        # cv2.putText(img, label, (x1, y1 +
+        #                        t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN, 2, [255, 255, 255], 2)
     return img
 
 
+def hhh(time):
+    global xxxx
+    while 1:
+        if time.time() - _time >= 1 or xxxx:
+            break
+    ptz.Stop({'ProfileToken': media_profile.token})
+
+
+def jjj(_time):
+    global is_jjj
+    global re_cruise
+    while 1:
+        if xxxx:
+            break
+        if time.time() - _time > 5:
+            th1.start()
+            re_cruise = 1
+            is_jjj = 0
+            break
+
+
 def detect(opt):
-    out, source, yolo_weights, deep_sort_weights, show_vid, save_vid, save_txt, imgsz = \
-        opt.output, opt.source, opt.yolo_weights, opt.deep_sort_weights, opt.show_vid, opt.save_vid, opt.save_txt, opt.img_size
+    global re_cruise
+    global xxxx
+    global cruise
+    global is_jjj
+    global _th1
+    global th1
+    out, source, yolo_weights, deep_sort_weights, show_vid, save_vid, save_txt, imgsz, cruise = \
+        opt.output, opt.source, opt.yolo_weights, opt.deep_sort_weights, opt.show_vid, opt.save_vid, opt.save_txt, opt.img_size, opt.cruise
     webcam = source == '0' or source.startswith(
         'rtsp') or source.startswith('http') or source.endswith('.txt')
-
+    if cruise:
+        th1 = Thread(target=real_move)
+        th1.start()
+        re_cruise = 1
     # initialize deepsort
     cfg = get_config()
     cfg.merge_from_file(opt.config_deepsort)
@@ -130,7 +241,8 @@ def detect(opt):
 
     save_path = str(Path(out))
     txt_path = str(Path(out)) + '/results.txt'
-
+    #
+    id = -1
     for frame_idx, (path, img, im0s, vid_cap) in enumerate(dataset):
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -139,13 +251,14 @@ def detect(opt):
             img = img.unsqueeze(0)
 
         # Inference
-        t1 = time_synchronized()
+        # 计算时间
+        # t1 = time_synchronized()
         pred = model(img, augment=opt.augment)[0]
 
         # Apply NMS
         pred = non_max_suppression(
             pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-        t2 = time_synchronized()
+        # t2 = time_synchronized()
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
@@ -158,6 +271,11 @@ def detect(opt):
             save_path = str(Path(out) / Path(p).name)
 
             if det is not None and len(det):
+                if cruise and re_cruise:
+                    _th1 = 1
+                    ptz.Stop({'ProfileToken': media_profile.token})
+                    re_cruise = 0
+                xxxx = 1
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(
                     img.shape[2:], det[:, :4], im0.shape).round()
@@ -183,91 +301,104 @@ def detect(opt):
 
                 # pass detections to deepsort
                 outputs = deepsort.update(xywhs, confss, im0)
-
-
-
-
-
                 # draw boxes for visualization
                 if len(outputs) > 0:
-                    bbox_xyxy = outputs[:, :4]
+                    bbox_xyxys = outputs[:, :4]
+                    # 追踪
+                    if id in bbox_xyxys[:, -1]:
+                        for _bbox in bbox_xyxys:
+                            if _bbox[-1] == id:
+                                real_track(bbox_xyxys[0])
+                                break
+                    else:
+                        id = bbox_xyxys[0][-1]
+                        real_track(bbox_xyxys[0])
+                    # 计算框高
+                    box_height = bbox_xyxys[0][3] - bbox_xyxys[0][1]
+                    _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                    if (box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0) or box_height < 40:
+                        _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                        if box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0:
+                            # print(_AbsoluteMove.Position.Zoom)
+                            if _AbsoluteMove.Position.Zoom.x - 0.05 >= 0:
+                                _AbsoluteMove.Position.Zoom.x -= 0.05
+                            else:
+                                _AbsoluteMove.Position.Zoom.x = 0
+                            _AbsoluteMove.Speed.Zoom.x = 1
+                            _AbsoluteMove.Speed.PanTilt.x = 0
+                            _AbsoluteMove.Speed.PanTilt.y = 0
+                            ptz.AbsoluteMove(_AbsoluteMove)
+                        elif box_height < 50:
+                            if _AbsoluteMove.Position.Zoom.x + 0.05 <= 1:
+                                _AbsoluteMove.Position.Zoom.x += 0.05
+                            else:
+                                _AbsoluteMove.Position.Zoom.x = 1
+                            _AbsoluteMove.Speed.Zoom.x = 1
+                            _AbsoluteMove.Speed.PanTilt.x = 0
+                            _AbsoluteMove.Speed.PanTilt.y = 0
+                            ptz.AbsoluteMove(_AbsoluteMove)
                     identities = outputs[:, -1]
-                    draw_boxes(im0, bbox_xyxy, identities)
-                    # to MOT format
-                    tlwh_bboxs = xyxy_to_tlwh(bbox_xyxy)
-
-
-                    # Write MOT compliant results to file
-                    if save_txt:
-                        for j, (tlwh_bbox, output) in enumerate(zip(tlwh_bboxs, outputs)):
-                            bbox_top = tlwh_bbox[0]
-                            bbox_left = tlwh_bbox[1]
-                            bbox_w = tlwh_bbox[2]
-                            bbox_h = tlwh_bbox[3]
-                            identity = output[-1]
-                            with open(txt_path, 'a') as f:
-                                f.write(('%g ' * 10 + '\n') % (frame_idx, identity, bbox_top,
-                                                            bbox_left, bbox_w, bbox_h, -1, -1, -1, -1))  # label format
-
+                    draw_boxes(im0, bbox_xyxys, id)
+                    xxxx = 0
             else:
+                if cruise and not re_cruise and not is_jjj:
+                    jjj(time.time())
+                    is_jjj = 1
+                # 1秒后恢复
+                # th2 = Thread(target=hhh)
+                # th2.start()
+                if not cruise:
+                    ptz.Stop({'ProfileToken': media_profile.token})
+                _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                if _AbsoluteMove.Position.Zoom.x != 0:
+                    _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                    _AbsoluteMove.Position.Zoom.x = 0
+                    _AbsoluteMove.Speed.Zoom.x = 1
+                    _AbsoluteMove.Speed.PanTilt.x = 0
+                    _AbsoluteMove.Speed.PanTilt.y = 0
+                    ptz.AbsoluteMove(_AbsoluteMove)
                 deepsort.increment_ages()
-
             # Print time (inference + NMS)
-            print('%sDone. (%.3fs)' % (s, t2 - t1))
-
-            # Stream results
+            # print('%sDone. (%.3fs)' % (s, t2 - t1))
+            # 展示视频流
             if show_vid:
+                # cv2.putText(img, text, (5, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255 ), 2)
                 cv2.imshow(p, im0)
                 if cv2.waitKey(1) == ord('q'):  # q to quit
                     raise StopIteration
-
-            # Save results (image with detections)
-            if save_vid:
-                if vid_path != save_path:  # new video
-                    vid_path = save_path
-                    if isinstance(vid_writer, cv2.VideoWriter):
-                        vid_writer.release()  # release previous video writer
-                    if vid_cap:  # video
-                        fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                        w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    else:  # stream
-                        fps, w, h = 30, im0.shape[1], im0.shape[0]
-                        save_path += '.mp4'
-
-                    vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                vid_writer.write(im0)
-
     if save_txt or save_vid:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
         if platform == 'darwin':  # MacOS
             os.system('open ' + save_path)
-
     print('Done. (%.3fs)' % (time.time() - t0))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--yolo_weights', type=str, default='yolov5/weights/yolov5s.pt', help='model.pt path')
-    parser.add_argument('--deep_sort_weights', type=str, default='deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7', help='ckpt.t7 path')
+    parser.add_argument('--yolo_weights', type=str, default=r"G:\yolo_tracking-v.2.0\yolov5\runs\train\exp12\weights"
+                                                            r"\best.pt", help='model.pt path')
+    parser.add_argument('--deep_sort_weights', type=str, default='deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7',
+                        help='ckpt.t7 path')
     # file/folder, 0 for webcam
-    parser.add_argument('--source', type=str, default=r'rtsp://admin:a12345678@192.168.1.125:554/Streaming/Channels'
+    parser.add_argument('--source', type=str, default=r'rtsp://admin:a12345678@192.168.1.193:554/Streaming/Channels'
                                                       r'/101?transportmode=unicast&profile=Profile_1', help='source')
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
+    # 无效
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.4, help='object confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--show-vid',default=True, action='store_true', help='display tracking video results')
+    parser.add_argument('--show-vid', default=True, action='store_true', help='display tracking video results')
     parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
-    parser.add_argument('--save-txt', default=True,action='store_true', help='save MOT compliant results to *.txt')
+    parser.add_argument('--save-txt', default=False, action='store_true', help='save MOT compliant results to *.txt')
     # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
-    #人
-    parser.add_argument('--classes', nargs='+', default=[0], type=int, help='filter by class')
+    # 人
+    parser.add_argument('--classes', nargs='+', default=None, type=int, help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument("--config_deepsort", type=str, default="deep_sort_pytorch/configs/deep_sort.yaml")
+    parser.add_argument("--cruise", type=int, default=0, help='是否开启巡航')
     args = parser.parse_args()
     args.img_size = check_img_size(args.img_size)
 

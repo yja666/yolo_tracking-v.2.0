@@ -9,8 +9,6 @@ import random
 import re
 import subprocess
 import time
-from itertools import repeat
-from multiprocessing.pool import ThreadPool
 from pathlib import Path
 
 import cv2
@@ -32,10 +30,10 @@ cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with Py
 os.environ['NUMEXPR_MAX_THREADS'] = str(min(os.cpu_count(), 8))  # NumExpr max threads
 
 
-def set_logging(rank=-1, verbose=True):
+def set_logging(rank=-1):
     logging.basicConfig(
         format="%(message)s",
-        level=logging.INFO if (verbose and rank in [-1, 0]) else logging.WARN)
+        level=logging.INFO if rank in [-1, 0] else logging.WARN)
 
 
 def init_seeds(seed=0):
@@ -51,28 +49,14 @@ def get_latest_run(search_dir='.'):
     return max(last_list, key=os.path.getctime) if last_list else ''
 
 
-def is_docker():
+def isdocker():
     # Is environment a Docker container
     return Path('/workspace').exists()  # or Path('/.dockerenv').exists()
-
-
-def is_colab():
-    # Is environment a Google Colab instance
-    try:
-        import google.colab
-        return True
-    except Exception as e:
-        return False
 
 
 def emojis(str=''):
     # Return platform-dependent emoji-safe version of string
     return str.encode().decode('ascii', 'ignore') if platform.system() == 'Windows' else str
-
-
-def file_size(file):
-    # Return file size in MB
-    return Path(file).stat().st_size / 1e6
 
 
 def check_online():
@@ -90,7 +74,7 @@ def check_git_status():
     print(colorstr('github: '), end='')
     try:
         assert Path('.git').exists(), 'skipping check (not a git repository)'
-        assert not is_docker(), 'skipping check (Docker image)'
+        assert not isdocker(), 'skipping check (Docker image)'
         assert check_online(), 'skipping check (offline)'
 
         cmd = 'git fetch && git config --get remote.origin.url'
@@ -126,8 +110,8 @@ def check_requirements(requirements='requirements.txt', exclude=()):
             pkg.require(r)
         except Exception as e:  # DistributionNotFound or VersionConflict if requirements not met
             n += 1
-            print(f"{prefix} {r} not found and is required by YOLOv5, attempting auto-update...")
-            print(subprocess.check_output(f"pip install '{r}'", shell=True).decode())
+            print(f"{prefix} {e.req} not found and is required by YOLOv5, attempting auto-update...")
+            print(subprocess.check_output(f"pip install '{e.req}'", shell=True).decode())
 
     if n:  # if packages updated
         source = file.resolve() if 'file' in locals() else requirements
@@ -147,8 +131,7 @@ def check_img_size(img_size, s=32):
 def check_imshow():
     # Check if environment supports image displays
     try:
-        assert not is_docker(), 'cv2.imshow() is disabled in Docker environments'
-        assert not is_colab(), 'cv2.imshow() is disabled in Google Colab environments'
+        assert not isdocker(), 'cv2.imshow() is disabled in Docker environments'
         cv2.imshow('test', np.zeros((1, 1, 3)))
         cv2.waitKey(1)
         cv2.destroyAllWindows()
@@ -161,12 +144,12 @@ def check_imshow():
 
 def check_file(file):
     # Search for file if not found
-    if Path(file).is_file() or file == '':
+    if os.path.isfile(file) or file == '':
         return file
     else:
         files = glob.glob('./**/' + file, recursive=True)  # find file
-        assert len(files), f'File Not Found: {file}'  # assert file was found
-        assert len(files) == 1, f"Multiple files match '{file}', specify exact path: {files}"  # assert unique
+        assert len(files), 'File Not Found: %s' % file  # assert file was found
+        assert len(files) == 1, "Multiple files match '%s', specify exact path: %s" % (file, files)  # assert unique
         return files[0]  # return file
 
 
@@ -178,52 +161,16 @@ def check_dataset(dict):
         if not all(x.exists() for x in val):
             print('\nWARNING: Dataset not found, nonexistent paths: %s' % [str(x) for x in val if not x.exists()])
             if s and len(s):  # download script
+                print('Downloading %s ...' % s)
                 if s.startswith('http') and s.endswith('.zip'):  # URL
                     f = Path(s).name  # filename
-                    print(f'Downloading {s} ...')
                     torch.hub.download_url_to_file(s, f)
-                    r = os.system(f'unzip -q {f} -d ../ && rm {f}')  # unzip
-                elif s.startswith('bash '):  # bash script
-                    print(f'Running {s} ...')
+                    r = os.system('unzip -q %s -d ../ && rm %s' % (f, f))  # unzip
+                else:  # bash script
                     r = os.system(s)
-                else:  # python script
-                    r = exec(s)  # return None
-                print('Dataset autodownload %s\n' % ('success' if r in (0, None) else 'failure'))  # print result
+                print('Dataset autodownload %s\n' % ('success' if r == 0 else 'failure'))  # analyze return value
             else:
                 raise Exception('Dataset not found.')
-
-
-def download(url, dir='.', unzip=True, delete=True, curl=False, threads=1):
-    # Multi-threaded file download and unzip function
-    def download_one(url, dir):
-        # Download 1 file
-        f = dir / Path(url).name  # filename
-        if not f.exists():
-            print(f'Downloading {url} to {f}...')
-            if curl:
-                os.system(f"curl -L '{url}' -o '{f}' --retry 9 -C -")  # curl download, retry and resume on fail
-            else:
-                torch.hub.download_url_to_file(url, f, progress=True)  # torch download
-        if unzip and f.suffix in ('.zip', '.gz'):
-            print(f'Unzipping {f}...')
-            if f.suffix == '.zip':
-                s = f'unzip -qo {f} -d {dir} && rm {f}'  # unzip -quiet -overwrite
-            elif f.suffix == '.gz':
-                s = f'tar xfz {f} --directory {f.parent}'  # unzip
-            if delete:  # delete zip file after unzip
-                s += f' && rm {f}'
-            os.system(s)
-
-    dir = Path(dir)
-    dir.mkdir(parents=True, exist_ok=True)  # make directory
-    if threads > 1:
-        pool = ThreadPool(threads)
-        pool.imap(lambda x: download_one(*x), zip(url, repeat(dir)))  # multi-threaded
-        pool.close()
-        pool.join()
-    else:
-        for u in tuple(url) if isinstance(url, str) else url:
-            download_one(u, dir)
 
 
 def make_divisible(x, divisor):
@@ -272,7 +219,7 @@ def labels_to_class_weights(labels, nc=80):
         return torch.Tensor()
 
     labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+    classes = labels[:, 0].astype(int)  # labels = [class xywh]
     weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
@@ -482,10 +429,6 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
     nc = prediction.shape[2] - 5  # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
 
-    # Checks
-    assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
-    assert 0 <= iou_thres <= 1, f'Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0'
-
     # Settings
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
     max_det = 300  # maximum number of detections per image
@@ -607,14 +550,14 @@ def print_mutation(hyp, results, yaml_file='hyp_evolved.yaml', bucket=''):
         results = tuple(x[0, :7])
         c = '%10.4g' * len(results) % results  # results (P, R, mAP@0.5, mAP@0.5:0.95, val_losses x 3)
         f.write('# Hyperparameter Evolution Results\n# Generations: %g\n# Metrics: ' % len(x) + c + '\n\n')
-        yaml.safe_dump(hyp, f, sort_keys=False)
+        yaml.dump(hyp, f, sort_keys=False)
 
     if bucket:
         os.system('gsutil cp evolve.txt %s gs://%s' % (yaml_file, bucket))  # upload
 
 
 def apply_classifier(x, model, img, im0):
-    # Apply a second stage classifier to yolo outputs
+    # applies a second stage classifier to yolo outputs
     im0 = [im0] if isinstance(im0, np.ndarray) else im0
     for i, d in enumerate(x):  # per image
         if d is not None and len(d):
@@ -648,31 +591,14 @@ def apply_classifier(x, model, img, im0):
     return x
 
 
-def save_one_box(xyxy, im, file='image.jpg', gain=1.02, pad=10, square=False, BGR=False):
-    # Save an image crop as {file} with crop size multiplied by {gain} and padded by {pad} pixels
-    xyxy = torch.tensor(xyxy).view(-1, 4)
-    b = xyxy2xywh(xyxy)  # boxes
-    if square:
-        b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1)  # attempt rectangle to square
-    b[:, 2:] = b[:, 2:] * gain + pad  # box wh * gain + pad
-    xyxy = xywh2xyxy(b).long()
-    clip_coords(xyxy, im.shape)
-    crop = im[int(xyxy[0, 1]):int(xyxy[0, 3]), int(xyxy[0, 0]):int(xyxy[0, 2])]
-    cv2.imwrite(str(increment_path(file, mkdir=True).with_suffix('.jpg')), crop if BGR else crop[..., ::-1])
-
-
-def increment_path(path, exist_ok=False, sep='', mkdir=False):
-    # Increment file or directory path, i.e. runs/exp --> runs/exp{sep}2, runs/exp{sep}3, ... etc.
+def increment_path(path, exist_ok=True, sep=''):
+    # Increment path, i.e. runs/exp --> runs/exp{sep}0, runs/exp{sep}1 etc.
     path = Path(path)  # os-agnostic
-    if path.exists() and not exist_ok:
-        suffix = path.suffix
-        path = path.with_suffix('')
+    if (path.exists() and exist_ok) or (not path.exists()):
+        return str(path)
+    else:
         dirs = glob.glob(f"{path}{sep}*")  # similar paths
         matches = [re.search(rf"%s{sep}(\d+)" % path.stem, d) for d in dirs]
         i = [int(m.groups()[0]) for m in matches if m]  # indices
         n = max(i) + 1 if i else 2  # increment number
-        path = Path(f"{path}{sep}{n}{suffix}")  # update path
-    dir = path if path.suffix == '' else path.parent  # directory
-    if not dir.exists() and mkdir:
-        dir.mkdir(parents=True, exist_ok=True)  # make directory
-    return path
+        return f"{path}{sep}{n}"  # update path
