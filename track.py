@@ -316,27 +316,27 @@ def detect(opt):
                     # 计算框高
                     box_height = bbox_xyxys[0][3] - bbox_xyxys[0][1]
                     _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                    if (box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0) or box_height < 40:
-                        _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                        if box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0:
-                            # print(_AbsoluteMove.Position.Zoom)
-                            if _AbsoluteMove.Position.Zoom.x - 0.05 >= 0:
-                                _AbsoluteMove.Position.Zoom.x -= 0.05
-                            else:
-                                _AbsoluteMove.Position.Zoom.x = 0
-                            _AbsoluteMove.Speed.Zoom.x = 1
-                            _AbsoluteMove.Speed.PanTilt.x = 0
-                            _AbsoluteMove.Speed.PanTilt.y = 0
-                            ptz.AbsoluteMove(_AbsoluteMove)
-                        elif box_height < 50:
-                            if _AbsoluteMove.Position.Zoom.x + 0.05 <= 1:
-                                _AbsoluteMove.Position.Zoom.x += 0.05
-                            else:
-                                _AbsoluteMove.Position.Zoom.x = 1
-                            _AbsoluteMove.Speed.Zoom.x = 1
-                            _AbsoluteMove.Speed.PanTilt.x = 0
-                            _AbsoluteMove.Speed.PanTilt.y = 0
-                            ptz.AbsoluteMove(_AbsoluteMove)
+                    # if (box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0) or box_height < 40:
+                    #     _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                    #     if box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0:
+                    #         # print(_AbsoluteMove.Position.Zoom)
+                    #         if _AbsoluteMove.Position.Zoom.x - 0.05 >= 0:
+                    #             _AbsoluteMove.Position.Zoom.x -= 0.05
+                    #         else:
+                    #             _AbsoluteMove.Position.Zoom.x = 0
+                    #         _AbsoluteMove.Speed.Zoom.x = 1
+                    #         _AbsoluteMove.Speed.PanTilt.x = 0
+                    #         _AbsoluteMove.Speed.PanTilt.y = 0
+                    #         ptz.AbsoluteMove(_AbsoluteMove)
+                    #     elif box_height < 50:
+                    #         if _AbsoluteMove.Position.Zoom.x + 0.05 <= 1:
+                    #             _AbsoluteMove.Position.Zoom.x += 0.05
+                    #         else:
+                    #             _AbsoluteMove.Position.Zoom.x = 1
+                    #         _AbsoluteMove.Speed.Zoom.x = 1
+                    #         _AbsoluteMove.Speed.PanTilt.x = 0
+                    #         _AbsoluteMove.Speed.PanTilt.y = 0
+                    #         ptz.AbsoluteMove(_AbsoluteMove)
                     identities = outputs[:, -1]
                     draw_boxes(im0, bbox_xyxys, id)
                     xxxx = 0
@@ -350,13 +350,13 @@ def detect(opt):
                 if not cruise:
                     ptz.Stop({'ProfileToken': media_profile.token})
                 _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                if _AbsoluteMove.Position.Zoom.x != 0:
-                    _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                    _AbsoluteMove.Position.Zoom.x = 0
-                    _AbsoluteMove.Speed.Zoom.x = 1
-                    _AbsoluteMove.Speed.PanTilt.x = 0
-                    _AbsoluteMove.Speed.PanTilt.y = 0
-                    ptz.AbsoluteMove(_AbsoluteMove)
+                # if _AbsoluteMove.Position.Zoom.x != 0:
+                #     _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                #     _AbsoluteMove.Position.Zoom.x = 0
+                #     _AbsoluteMove.Speed.Zoom.x = 1
+                #     _AbsoluteMove.Speed.PanTilt.x = 0
+                #     _AbsoluteMove.Speed.PanTilt.y = 0
+                #     ptz.AbsoluteMove(_AbsoluteMove)
                 deepsort.increment_ages()
             # Print time (inference + NMS)
             # print('%sDone. (%.3fs)' % (s, t2 - t1))
