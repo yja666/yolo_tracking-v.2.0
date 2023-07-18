@@ -1,5 +1,6 @@
 import sys
 from multiprocessing import Process, Queue
+from time import sleep
 
 sys.path.insert(0, './yolov5')
 from real_track import real_track
@@ -27,7 +28,7 @@ import zeep
 # import cruise_track
 
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
-mycam = ONVIFCamera('192.168.1.193', 80, 'admin', 'a12345678')
+mycam = ONVIFCamera('192.168.1.125', 80, 'admin', 'a12345678')
 media = mycam.create_media_service()
 ptz = mycam.create_ptz_service()
 media_profile = media.GetProfiles()[0]
@@ -41,10 +42,14 @@ cruise = 0
 re_cruise = 0
 # 判断是否处于jjj函数中
 is_jjj = 0
+# 判断是否处于hhh函数中
+is_hhh = 1
 # 判断是否退出自动巡航线程
 _th1 = 0
 # 自动巡航的线程名
-th1 = None
+# th1 = None
+# 是否1秒后仍未检测到物体
+is_not_hhh = 0
 
 
 # 自动巡航进程函数
@@ -55,7 +60,6 @@ def real_move():
     request.ConfigurationToken = media_profile.PTZConfiguration.token
     ptz_configuration_options = ptz.GetConfigurationOptions(request)
     request = ptz.create_type('ContinuousMove')
-    print(request)
     request.ProfileToken = media_profile.token
     ptz.Stop({'ProfileToken': media_profile.token})
 
@@ -72,9 +76,7 @@ def real_move():
 
     _AbsoluteMove.Position.PanTilt.x = 0
     _AbsoluteMove.Speed.PanTilt.x = 6
-    print(type(_AbsoluteMove.Position.PanTilt.y))
     _AbsoluteMove.Position.PanTilt.y = 1
-    print(type(_AbsoluteMove.Position.PanTilt.y))
     _AbsoluteMove.Speed.PanTilt.y = 6
 
     _AbsoluteMove.Position.Zoom = 0
@@ -89,6 +91,7 @@ def real_move():
             break
     print('move...')
     while 1:
+        print('zai')
         if _th1:
             _th1 = 0
             re_cruise = 0
@@ -97,7 +100,6 @@ def real_move():
         ptz.ContinuousMove(request)
         while 1:
             if _th1:
-                _th1 = 0
                 break
             if ptz.GetStatus({'ProfileToken': media_profile.token}).Position.PanTilt.y <= 0.4:
                 break
@@ -105,7 +107,6 @@ def real_move():
         ptz.ContinuousMove(request)
         while 1:
             if _th1:
-                _th1 = 0
                 break
             if ptz.GetStatus({'ProfileToken': media_profile.token}).Position.PanTilt.y == 1:
                 break
@@ -158,21 +159,33 @@ def draw_boxes(img, bbox, identities=None, offset=(0, 0)):
     return img
 
 
-def hhh(time):
+# 未检测1秒后才停止
+def hhh(_time):
     global xxxx
+    global is_hhh
+    global is_not_hhh
     while 1:
-        if time.time() - _time >= 1 or xxxx:
+        if time.time() - _time >= 1:
+            is_not_hhh = 1
+            break
+        if xxxx:
             break
     ptz.Stop({'ProfileToken': media_profile.token})
 
 
+# 5秒后未检测则巡航
 def jjj(_time):
     global is_jjj
     global re_cruise
     while 1:
+        print('正在jjj中')
+        print(f'xxxx={xxxx}')
         if xxxx:
+            is_jjj = 0
             break
-        if time.time() - _time > 5:
+        sleep(1)
+        if time.time() - _time > 5 and (not re_cruise):
+            th1 = Thread(target=real_move())
             th1.start()
             re_cruise = 1
             is_jjj = 0
@@ -184,8 +197,10 @@ def detect(opt):
     global xxxx
     global cruise
     global is_jjj
+    global is_hhh
     global _th1
-    global th1
+    # global th1
+    global is_not_hhh
     out, source, yolo_weights, deep_sort_weights, show_vid, save_vid, save_txt, imgsz, cruise = \
         opt.output, opt.source, opt.yolo_weights, opt.deep_sort_weights, opt.show_vid, opt.save_vid, opt.save_txt, opt.img_size, opt.cruise
     webcam = source == '0' or source.startswith(
@@ -275,7 +290,7 @@ def detect(opt):
                     _th1 = 1
                     ptz.Stop({'ProfileToken': media_profile.token})
                     re_cruise = 0
-                xxxx = 1
+                    is_jjj=0
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(
                     img.shape[2:], det[:, :4], im0.shape).round()
@@ -303,60 +318,72 @@ def detect(opt):
                 outputs = deepsort.update(xywhs, confss, im0)
                 # draw boxes for visualization
                 if len(outputs) > 0:
+                    xxxx = 1
                     bbox_xyxys = outputs[:, :4]
                     # 追踪
                     if id in bbox_xyxys[:, -1]:
                         for _bbox in bbox_xyxys:
                             if _bbox[-1] == id:
-                                real_track(bbox_xyxys[0])
+                                real_track(_bbox)
+                                # box_height = _bbox[3] - _bbox[1]
                                 break
                     else:
                         id = bbox_xyxys[0][-1]
+                        # box_height = bbox_xyxys[0][3] - bbox_xyxys[0][1]
                         real_track(bbox_xyxys[0])
                     # 计算框高
-                    box_height = bbox_xyxys[0][3] - bbox_xyxys[0][1]
-                    _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                    # if (box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0) or box_height < 40:
+                    # _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                    # if (box_height > 130 and _AbsoluteMove.Position.Zoom.x != 0) or box_height < 100:
                     #     _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                    #     if box_height > 70 and _AbsoluteMove.Position.Zoom.x != 0:
+                    #     if box_height > 130 and _AbsoluteMove.Position.Zoom.x != 0:
                     #         # print(_AbsoluteMove.Position.Zoom)
                     #         if _AbsoluteMove.Position.Zoom.x - 0.05 >= 0:
                     #             _AbsoluteMove.Position.Zoom.x -= 0.05
                     #         else:
                     #             _AbsoluteMove.Position.Zoom.x = 0
-                    #         _AbsoluteMove.Speed.Zoom.x = 1
+                    #         _AbsoluteMove.Speed.Zoom.x = 10
                     #         _AbsoluteMove.Speed.PanTilt.x = 0
                     #         _AbsoluteMove.Speed.PanTilt.y = 0
                     #         ptz.AbsoluteMove(_AbsoluteMove)
-                    #     elif box_height < 50:
+                    #     elif box_height < 100:
+                    #         print(666)
                     #         if _AbsoluteMove.Position.Zoom.x + 0.05 <= 1:
                     #             _AbsoluteMove.Position.Zoom.x += 0.05
                     #         else:
                     #             _AbsoluteMove.Position.Zoom.x = 1
-                    #         _AbsoluteMove.Speed.Zoom.x = 1
+                    #         _AbsoluteMove.Speed.Zoom.x = 10
                     #         _AbsoluteMove.Speed.PanTilt.x = 0
                     #         _AbsoluteMove.Speed.PanTilt.y = 0
                     #         ptz.AbsoluteMove(_AbsoluteMove)
                     identities = outputs[:, -1]
                     draw_boxes(im0, bbox_xyxys, id)
                     xxxx = 0
+                    is_hhh = 0
             else:
+                print(cruise, re_cruise, is_jjj)
+                print(cruise and not re_cruise and not is_jjj)
+                if not is_hhh:
+                    th2 = Thread(target=hhh, args=(time.time(),))
+                    th2.start()
+                    is_hhh = 1
                 if cruise and not re_cruise and not is_jjj:
-                    jjj(time.time())
                     is_jjj = 1
-                # 1秒后恢复
-                # th2 = Thread(target=hhh)
-                # th2.start()
-                if not cruise:
-                    ptz.Stop({'ProfileToken': media_profile.token})
-                _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                # if _AbsoluteMove.Position.Zoom.x != 0:
-                #     _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
-                #     _AbsoluteMove.Position.Zoom.x = 0
-                #     _AbsoluteMove.Speed.Zoom.x = 1
-                #     _AbsoluteMove.Speed.PanTilt.x = 0
-                #     _AbsoluteMove.Speed.PanTilt.y = 0
-                #     ptz.AbsoluteMove(_AbsoluteMove)
+                    th3 = Thread(target=jjj, args=(time.time(),))
+                    th3.start()
+                # 失去目标后，1秒后恢复
+
+                # if not cruise:
+                #     ptz.Stop({'ProfileToken': media_profile.token})
+                if is_not_hhh:
+                    is_not_hhh = 0
+                    _AbsoluteMove.Position = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                    if _AbsoluteMove.Position.Zoom.x != 0:
+                        _AbsoluteMove.Speed = ptz.GetStatus({'ProfileToken': media_profile.token}).Position
+                        _AbsoluteMove.Position.Zoom.x = 0
+                        _AbsoluteMove.Speed.Zoom.x = 1
+                        _AbsoluteMove.Speed.PanTilt.x = 0
+                        _AbsoluteMove.Speed.PanTilt.y = 0
+                        ptz.AbsoluteMove(_AbsoluteMove)
                 deepsort.increment_ages()
             # Print time (inference + NMS)
             # print('%sDone. (%.3fs)' % (s, t2 - t1))
@@ -364,13 +391,11 @@ def detect(opt):
             if show_vid:
                 # cv2.putText(img, text, (5, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255 ), 2)
                 cv2.imshow(p, im0)
-                if cv2.waitKey(1) == ord('q'):  # q to quit
-                    raise StopIteration
-    if save_txt or save_vid:
-        print('Results saved to %s' % os.getcwd() + os.sep + out)
-        if platform == 'darwin':  # MacOS
-            os.system('open ' + save_path)
-    print('Done. (%.3fs)' % (time.time() - t0))
+    # if save_txt or save_vid:
+    #     print('Results saved to %s' % os.getcwd() + os.sep + out)
+    #     if platform == 'darwin':  # MacOS
+    #         os.system('open ' + save_path)
+    # print('Done. (%.3fs)' % (time.time() - t0))
 
 
 if __name__ == '__main__':
@@ -380,13 +405,13 @@ if __name__ == '__main__':
     parser.add_argument('--deep_sort_weights', type=str, default='deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7',
                         help='ckpt.t7 path')
     # file/folder, 0 for webcam
-    parser.add_argument('--source', type=str, default=r'rtsp://admin:a12345678@192.168.1.193:554/Streaming/Channels'
+    parser.add_argument('--source', type=str, default=r'rtsp://admin:a12345678@192.168.1.125:554/Streaming/Channels'
                                                       r'/101?transportmode=unicast&profile=Profile_1', help='source')
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
     # 无效
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
+    parser.add_argument('--conf-thres', type=float, default=0.6, help='object confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--show-vid', default=True, action='store_true', help='display tracking video results')
@@ -398,7 +423,7 @@ if __name__ == '__main__':
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument("--config_deepsort", type=str, default="deep_sort_pytorch/configs/deep_sort.yaml")
-    parser.add_argument("--cruise", type=int, default=0, help='是否开启巡航')
+    parser.add_argument("--cruise", default=True, help='是否开启巡航')
     args = parser.parse_args()
     args.img_size = check_img_size(args.img_size)
 
